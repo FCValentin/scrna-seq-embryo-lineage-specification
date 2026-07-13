@@ -1,16 +1,30 @@
-# FCValentin-ProjectMaster2_singleCell_data_and_expression_curves
-2019 scripts
+# MSc Project — Single-Cell RNA-seq: Human Pre-implantation Embryo Development
 
-Based on PTUI Dimitri Meistermann thesis and paper :
+## About
 
-- Paper :
-Meistermann D, Bruneau A, Loubersac S, Reignier A, Firmin J, François-Campion V, Kilens S, Lelièvre Y, Lammers J, Feyeux M, Hulin P, Nedellec S, Bretin B, Castel G, Allègre N, Covin S, Bihouée A, Soumillon M, Mikkelsen T, Barrière P, Chazaud C, Chappell J, Pasque V, Bourdon J, Fréour T, David L. Integrated pseudotime analysis of human pre-implantation embryo single-cell transcriptomes reveals the dynamics of lineage specification. Cell Stem Cell. 2021 Sep 2;28(9):1625-1640.e6. doi: 10.1016/j.stem.2021.04.027. Epub 2021 May 17. PMID: 34004179.
+R scripts developed during MSc M2 internship at CRTI, UMR 1064, Nantes Université (dir. L. David, 2018).
 
-- Thesis :
-https://theses.fr/2020NANT1019
+This project contributed to the analysis published in:
 
-Gitlab projects linked :
-https://gitlab.univ-nantes.fr/E114424Z/ptuihost
-https://gitlab.univ-nantes.fr/E114424Z/monocle2_workflow
-https://gitlab.univ-nantes.fr/E114424Z/SingleCell_Align
+> Meistermann D., Bruneau A., [...] François-Campion V. et al. — *Integrated pseudotime analysis of human pre-implantation embryo single-cell transcriptomes reveals the dynamics of lineage specification*, **Cell Stem Cell**, 2021.
+> https://theses.fr/2020NANT1019
+> DOI: [10.1016/j.stem.2021.04.027](https://doi.org/10.1016/j.stem.2021.04.027)
+> https://gitlab.univ-nantes.fr/E114424Z/ptuihost
+> https://gitlab.univ-nantes.fr/E114424Z/monocle2_workflow
+> https://gitlab.univ-nantes.fr/E114424Z/SingleCell_Align
 
+## Key analyses
+- scRNA-seq data processing and quality control
+- Kinetic gene expression profiling as a function of developmental time and cell fate
+- Gene regulatory network (GRN) reconstruction associated with cell fate transitions
+- Pseudotime trajectory analysis
+
+## Tools
+- R / Bioconductor
+- Seurat, Monocle (or equivalent pseudotime tools)
+
+## Note
+These scripts were developed in 2018-2019 and may require package updates for current R versions.
+
+## Author
+**Valentin FRANCOIS--CAMPION** — [GitHub](https://github.com/FCValentin)
