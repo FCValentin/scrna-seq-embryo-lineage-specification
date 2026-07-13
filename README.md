@@ -7,10 +7,14 @@ R scripts developed during MSc M2 internship at CRTI, UMR 1064, Nantes Universit
 This project contributed to the analysis published in:
 
 > Meistermann D., Bruneau A., [...] François-Campion V. et al. — *Integrated pseudotime analysis of human pre-implantation embryo single-cell transcriptomes reveals the dynamics of lineage specification*, **Cell Stem Cell**, 2021.
-> https://theses.fr/2020NANT1019
 > DOI: [10.1016/j.stem.2021.04.027](https://doi.org/10.1016/j.stem.2021.04.027)
+
+> https://theses.fr/2020NANT1019
+
 > https://gitlab.univ-nantes.fr/E114424Z/ptuihost
+
 > https://gitlab.univ-nantes.fr/E114424Z/monocle2_workflow
+
 > https://gitlab.univ-nantes.fr/E114424Z/SingleCell_Align
 
 ## Key analyses
