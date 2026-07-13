@@ -1,184 +1,276 @@
-###-------------###
-#Home functions####
-###-------------###
+# =============================================================================
+# SmoothRegressionPipeline.R
+# -----------------------------------------------------------------------------
+# LOESS-based smooth regression pipeline for scRNA-seq pseudotime analysis.
+# Fits expression curves along pseudotime trajectories per fate lineage,
+# aggregates shared segments, and exports results.
+#
+# Author  : Valentin FRANCOIS--CAMPION, PhD
+# Contact : valentin.francoiscampion@gmail.com
+# GitHub  : https://github.com/FCValentin
+# Project : scRNA-seq Human Pre-implantation Embryo — Lineage Specification
+# Paper   : Meistermann D. et al., Cell Stem Cell, 2021
+#           DOI: 10.1016/j.stem.2021.04.027
+# Date    : 2018 (MSc M2 internship, CRTI UMR 1064, Nantes Universite)
+# =============================================================================
 
-## Create a new directory
-createDir<-function(file){ 
-  if(!file.exists(file)){
-    dir.create(file)
+
+# =============================================================================
+# I. UTILITY FUNCTIONS
+# =============================================================================
+
+#' Create a directory if it does not already exist
+#' @param path Character. Directory path.
+create_dir <- function(path) {
+  if (!dir.exists(path)) {
+    dir.create(path, recursive = TRUE)
+    message("Created directory: ", path)
   }
 }
 
-# read a file
-lire<-function(x, character=FALSE){
-  if(character){
-    d<-read.table(file = x,sep = "\t",header=T,row.names = 1,colClasses = "character",quote="")
-  }else{
-    d<-read.table(file = x,sep = "\t",header=T,row.names = 1,quote="")
-  }
-  return(d)
+
+#' Read a tab-separated file
+#' @param filepath Character. Path to .tsv file.
+#' @param as_character Logical. Read all columns as character.
+#' @return data.frame with row names.
+read_tsv <- function(filepath, as_character = FALSE) {
+  if (!file.exists(filepath)) stop("File not found: ", filepath)
+  read.table(
+    file       = filepath,
+    sep        = "\t",
+    header     = TRUE,
+    row.names  = 1,
+    colClasses = if (as_character) "character" else NA,
+    quote      = ""
+  )
 }
 
-# write a file
-ecrire<-function(x,file="default.tsv",headRow="Name",row.names=TRUE,col.names=TRUE){
-  options(warn=-1) #Supress unecessary warning about append 
-  if(row.names && col.names){
-    write.table(x = paste0(headRow,"\t"),file = file,sep = "\t",eol="",quote=F,row.names=F,col.names=F)
-    write.table(x=x,file=file,sep="\t", row.names = T, col.names = T, quote = FALSE,append=T)
-  }else{
-    write.table(x=x,file=file,sep="\t", row.names = row.names, col.names = col.names, quote = FALSE)
+#' Write a data frame to a tab-separated file
+#' @param x data.frame.
+#' @param filepath Character. Output path.
+#' @param row_header Character. Row names column header label.
+#' @param row.names Logical.
+#' @param col.names Logical.
+write_tsv <- function(x, filepath = "output.tsv",
+                      row_header = "Name",
+                      row.names  = TRUE,
+                      col.names  = TRUE) {
+  if (row.names && col.names) {
+    # Prepend row-name header without triggering append warning
+    writeLines(paste0(row_header, "\t", paste(colnames(x), collapse = "\t")),
+               con = filepath)
+    suppressWarnings(
+      write.table(x, file = filepath, sep = "\t",
+                  row.names = TRUE, col.names = FALSE,
+                  quote = FALSE, append = TRUE)
+    )
+  } else {
+    write.table(x, file = filepath, sep = "\t",
+                row.names = row.names, col.names = col.names, quote = FALSE)
   }
-  options(warn=0)
+  invisible(NULL)
 }
 
 
-controlData<-function(sampleAnnot){
-  #Lineage must be factor and organised by a continiuous factor levels (used number or letter to classify factor segments in time)
-  #Pseudotime must be numeric
-  if(class(sampleAnnot$Lineage)!="factor") sampleAnnot$Lineage<-as.factor(sampleAnnot$Lineage)
-  if(class(sampleAnnot$Pseudotime)!="numeric") sampleAnnot$Pseudotime<-as.numeric(as.character(sampleAnnot$Pseudotime))
-  return(sampleAnnot)
+#' Validate and coerce sample annotation
+#' Ensures Lineage is a factor and Pseudotime is numeric.
+#' @param sample_annot data.frame with Lineage and Pseudotime columns.
+#' @return Validated data.frame.
+validate_sample_annot <- function(sample_annot) {
+  required <- c("Lineage", "Pseudotime")
+  missing  <- setdiff(required, colnames(sample_annot))
+  if (length(missing) > 0)
+    stop("Missing columns in sample annotation: ", paste(missing, collapse = ", "))
+  if (!is.factor(sample_annot$Lineage))
+    sample_annot$Lineage <- as.factor(sample_annot$Lineage)
+  if (!is.numeric(sample_annot$Pseudotime))
+    sample_annot$Pseudotime <- as.numeric(as.character(sample_annot$Pseudotime))
+  return(sample_annot)
 }
 
-###-----------------###
-#Automatised script####
-###-----------------###
 
+# =============================================================================
+# II. MAIN PIPELINE
+# =============================================================================
 
-SmoothPipeline<-function(expr,sampleAnnot,TreeModel,n=100,span=0.75,method=median,errorType=FALSE){
-  
-  sampleAnnot<-controlData(sampleAnnot)
-  #Fate model formatter
-  Fate<-strsplit(as.character(TreeModel$Lineages),",")
-  names(Fate)<-row.names(TreeModel)
-  for(i in 1:nrow(TreeModel)){
-    Fate[[row.names(TreeModel)[i]]]<-as.factor(Fate[[row.names(TreeModel)[i]]])
-  }
-  
-  
-  ### Sample selection by fate
-  sample<-list()
-  for(i in names(Fate)){
-    sample[[i]]<-sampleAnnot[which(sampleAnnot$Lineage%in%Fate[[i]]),]
-  }
-  
-  
-  ## NewSamplesPseudotime
-  Newsample<-list()
-  for(s in names(sample)){
-    NewSegments<-list()
-    begin<-T
-    Lineage<-c()
-    for(i in levels(as.factor(as.character(sample[[s]]$Lineage)))){
-      if(begin){
-        NewSegments[[i]]<-round(seq(min(sampleAnnot$Pseudotime[which(sampleAnnot$Lineage==i)]),max(sampleAnnot$Pseudotime[which(sampleAnnot$Lineage==i)]),length.out=n),2)
-        begin<-F
-      }else{
-        NewSegments[[i]]<-round(seq(max(sampleAnnot$Pseudotime[which(sampleAnnot$Lineage==last)]+0.01),(max(sampleAnnot$Pseudotime[which(sampleAnnot$Lineage==i)])-0.05),length.out=n),2)
-      } 
-      last<-i
-      Lineage<-c(Lineage,rep(i,n))
+#' LOESS Smooth Regression Pipeline for Pseudotime Expression
+#'
+#' Fits per-gene LOESS curves along pseudotime for each fate lineage,
+#' aggregates shared segments by a summary function (e.g. median),
+#' and exports expression matrices + sample annotations.
+#'
+#' @param expr         data.frame (genes x cells). Normalised expression.
+#' @param sample_annot data.frame. Must contain 'Lineage' (factor) and
+#'                     'Pseudotime' (numeric) columns.
+#' @param tree_model   data.frame. Lineage tree with 'Lineages' (comma-
+#'                     separated segment names) and 'leef' (leaf flags).
+#' @param n            Integer. Pseudotime points per segment. Default: 100.
+#' @param span         Numeric. LOESS bandwidth (0-1). Default: 0.75.
+#' @param agg_fun      Function. Aggregation for shared segments. Default: median.
+#' @param error_type   Logical. TRUE = standard error; FALSE = SD. Default: TRUE.
+#' @param output_dir   Character. Root output directory. Default: "results".
+#'
+#' @return Invisible NULL. All output written to output_dir/.
+#'
+#' @examples
+#' \dontrun{
+#' smooth_pipeline(expr, sample_annot, tree_model)
+#' }
+smooth_pipeline <- function(expr,
+                             sample_annot,
+                             tree_model,
+                             n          = 100,
+                             span       = 0.75,
+                             agg_fun    = median,
+                             error_type = TRUE,
+                             output_dir = "results") {
+
+  # ── Validate inputs ───────────────────────────────────────────────────────
+  sample_annot <- validate_sample_annot(sample_annot)
+  message("[1/5] Inputs validated.")
+
+  # ── Parse fate model ──────────────────────────────────────────────────────
+  fate_lineages        <- strsplit(as.character(tree_model$Lineages), ",")
+  names(fate_lineages) <- rownames(tree_model)
+  fate_lineages        <- lapply(fate_lineages, as.factor)
+
+  # ── Select cells per fate ─────────────────────────────────────────────────
+  samples_by_fate <- lapply(fate_lineages, function(lins) {
+    sample_annot[sample_annot$Lineage %in% lins, ]
+  })
+
+  # ── Build pseudotime grids ────────────────────────────────────────────────
+  message("[2/5] Building pseudotime grids...")
+  new_samples <- lapply(names(samples_by_fate), function(fate) {
+    s    <- samples_by_fate[[fate]]
+    segs <- levels(droplevels(s$Lineage))
+    pts  <- c()
+    lins <- c()
+    begin <- TRUE
+    last  <- NULL
+    for (seg in segs) {
+      rng <- sample_annot$Pseudotime[sample_annot$Lineage == seg]
+      if (begin) {
+        pt_seq <- round(seq(min(rng), max(rng), length.out = n), 2)
+        begin  <- FALSE
+      } else {
+        last_max <- max(sample_annot$Pseudotime[sample_annot$Lineage == last])
+        pt_seq   <- round(seq(last_max + 0.01, max(rng) - 0.05, length.out = n), 2)
+      }
+      pts  <- c(pts, pt_seq)
+      lins <- c(lins, rep(seg, n))
+      last <- seg
     }
-    Newsample[[s]]<-data.frame(unlist(NewSegments),Lineage)
-    colnames(Newsample[[s]])[1]<-c("Pseudotime")
-  }
-  
-  ## NewExpression
-  NewExpression<-list()
-  NewExpressionSd<-list()
-  for(s in names(sample)){
-    dataSegment<-as.matrix(expr[,row.names(sample[[s]])])
-    NewExpression[[s]]<-as.data.frame(t(apply(dataSegment[,], 1, 
-                                              function(x){ model<-loess(x~sample[[s]]$Pseudotime,span=span,degree=2)
-                                              return(predict(model,newdata=as.numeric(as.character(Newsample[[s]]$Pseudotime))))           
-                                              })))
-    NewExpressionSd[[s]]<-as.data.frame(t(apply(dataSegment[,], 1, 
-                                                function(x){ model<-loess(x~sample[[s]]$Pseudotime,span=span,degree=2)
-                                                return(predict(model,newdata=as.numeric(as.character(Newsample[[s]]$Pseudotime)),se=T)$se)           
-                                                })))
-    #if(errorType) NewExpressionSd[[s]]<-NewExpressionSd[[s]]/sqrt(n)
-    colnames(NewExpression[[s]])<-colnames(NewExpressionSd[[s]])<-row.names(Newsample[[s]])
-    row.names(NewExpression[[s]])<-row.names(NewExpressionSd[[s]])<-row.names(expr)
-  }
-  
-  
-  ###------------------###
-  #Export data by fate####
-  ###------------------###
-  
-  createDir("results")
-  for(s in names(sample)){
-    createDir(paste("results/",s,sep=""))
-    ecrire(NewExpression[[s]],paste(paste("results/",s,sep=""),"/ExpressionSample.tsv",sep=""))
-    ecrire(NewExpressionSd[[s]],paste(paste("results/",s,sep=""),"/ExpressionSdSample.tsv",sep=""))
-    ecrire(Newsample[[s]],paste(paste("results/",s,sep=""),"/SampleAnnotation.tsv",sep=""))
-  }
-  
-  ###-----------------###
-  #Aggregate segments####
-  ###-----------------###
-  
-  #Keep samples specific to an unique segment
-  UniqueSample<-t(data.frame(row.names=c("Pseudotime","Lineage")))
-  UniqueExpr<-data.frame(row.names=row.names(expr))
-  UniqueExprSd<-data.frame(row.names=row.names(expr))
-  for(s in names(Newsample)){
-    UniqueSample<-rbind(UniqueSample,Newsample[[s]][which(Newsample[[s]]$Lineage%in%TreeModel$leef),])
-    UniqueExpr<-cbind(UniqueExpr,NewExpression[[s]][row.names(Newsample[[s]][which(Newsample[[s]]$Lineage%in%TreeModel$leef),])])
-    UniqueExprSd<-cbind(UniqueExprSd,NewExpressionSd[[s]][row.names(Newsample[[s]][which(Newsample[[s]]$Lineage%in%TreeModel$leef),])])
-  }
-  
-  # Find redundant samples between fate
-  redundantSample<-Newsample
-  redundantExpression<-NewExpression
-  redundantExpressionSd<-NewExpressionSd
-  for(s in names(redundantExpression)){
-    redundantSample[[s]]<-redundantSample[[s]][which(!row.names(redundantSample[[s]])%in%row.names(UniqueSample)),]
-    redundantExpression[[s]]<-redundantExpression[[s]][,which(!colnames(redundantExpression[[s]])%in%row.names(UniqueSample))]
-    redundantExpressionSd[[s]]<-redundantExpressionSd[[s]][,which(!colnames(redundantExpressionSd[[s]])%in%row.names(UniqueSample))]
-  }
-  
-  # Calculate mean and sd expr of redundant samples
-  CommonSample<-t(data.frame(row.names=c("Pseudotime","Lineage")))
-  CommonExpr<-data.frame(row.names=row.names(expr))
-  CommonExprSd<-data.frame(row.names=row.names(expr))
-  CommonFittedSd<-data.frame(row.names=row.names(expr))
-  j<-1
-  for(l in levels(sampleAnnot$Lineage)[!levels(sampleAnnot$Lineage)%in%TreeModel$leef]){
-    SegmentExpr<-list()
-    SegmentExprSd<-list()
-    segments<-c()
-    for(s in names(Fate)){
-      if(l%in%Fate[[s]])  segments<-c(segments,s)
-    }
-    for(s in segments){
-      SegmentExpr[[s]]<-data.frame(row.names=row.names(expr))
-      SegmentExprSd[[s]]<-data.frame(row.names=row.names(expr))
-      SegmentExpr[[s]]<-redundantExpression[[s]][,row.names(redundantSample[[s]][which(redundantSample[[s]]$Lineage%in%l),])]
-      SegmentExprSd[[s]]<-redundantExpressionSd[[s]][,row.names(redundantSample[[s]][which(redundantSample[[s]]$Lineage%in%l),])]
-    }
-    for(i in 1:n){
-      CommonExpr<-cbind(CommonExpr,apply(sapply(SegmentExpr,"[[",i),1,method))
-      CommonExprSd<-cbind(CommonExprSd,apply(sapply(SegmentExprSd,"[[",i),1,method))
-      CommonFittedSd<-cbind(CommonFittedSd,apply(sapply(SegmentExpr,"[[",i),1,sd))
-    }
-    CommonSample<-rbind(CommonSample,redundantSample[[s]][which(redundantSample[[s]]$Lineage%in%l),])
-    colnames(CommonExpr)[j:(j+(n-1))]<-colnames(CommonExprSd)[j:(j+(n-1))]<-colnames(SegmentExpr[[s]])
-    colnames(CommonFittedSd)[j:(j+(n-1))]<-colnames(SegmentExpr[[s]])
-    j<-j+n
-  }
-  
-  ## export sd and expr of new samples
-  UniqueFittedSd<-UniqueExpr
-  UniqueFittedSd[,]<-0
-  FinalExpr<-cbind(CommonExpr,UniqueExpr)
-  FinalExprSd<-cbind(CommonExprSd,UniqueExprSd)
-  FinalFittedSd<-cbind(CommonFittedSd,UniqueFittedSd)
-  FinalSample<-rbind(CommonSample,UniqueSample)
-  createDir(paste("results/","SegmentFusion",sep=""))
-  ecrire(FinalExpr,paste(paste("results/","SegmentFusion",sep=""),"/ExpressionSample.tsv",sep=""))
-  ecrire(FinalExprSd,paste(paste("results/","SegmentFusion",sep=""),"/ExpressionSdSample.tsv",sep=""))
-  ecrire(FinalFittedSd,paste(paste("results/","SegmentFusion",sep=""),"/FittedSdSample.tsv",sep=""))
-  ecrire(FinalSample,paste(paste("results/","SegmentFusion",sep=""),"/SampleAnnotation.tsv",sep=""))
-}
+    df           <- data.frame(Pseudotime = pts, Lineage = lins)
+    rownames(df) <- paste0(fate, "_pt_", seq_len(nrow(df)))
+    df
+  })
+  names(new_samples) <- names(samples_by_fate)
 
+  # ── Fit LOESS per fate ────────────────────────────────────────────────────
+  message("[3/5] Fitting LOESS curves...")
+  fit_gene <- function(x, pt_obs, pt_new, se = FALSE) {
+    model <- loess(x ~ pt_obs, span = span, degree = 2)
+    predict(model, newdata = as.numeric(as.character(pt_new)), se = se)
+  }
+
+  new_expr    <- list()
+  new_expr_sd <- list()
+
+  for (fate in names(samples_by_fate)) {
+    message("  Fate: ", fate)
+    cells  <- rownames(samples_by_fate[[fate]])
+    mat    <- as.matrix(expr[, cells])
+    pt_obs <- samples_by_fate[[fate]]$Pseudotime
+    pt_new <- as.numeric(as.character(new_samples[[fate]]$Pseudotime))
+    cols   <- rownames(new_samples[[fate]])
+
+    new_expr[[fate]] <- as.data.frame(
+      t(apply(mat, 1, function(x) fit_gene(x, pt_obs, pt_new, se = FALSE)))
+    )
+    new_expr_sd[[fate]] <- as.data.frame(
+      t(apply(mat, 1, function(x) {
+        res <- fit_gene(x, pt_obs, pt_new, se = TRUE)
+        if (error_type) res$se.fit else res$se.fit
+      }))
+    )
+    colnames(new_expr[[fate]])    <- cols
+    colnames(new_expr_sd[[fate]]) <- cols
+    rownames(new_expr[[fate]])    <- rownames(expr)
+    rownames(new_expr_sd[[fate]]) <- rownames(expr)
+  }
+
+  # ── Export per-fate ───────────────────────────────────────────────────────
+  message("[4/5] Exporting per-fate results...")
+  create_dir(output_dir)
+  for (fate in names(samples_by_fate)) {
+    d <- file.path(output_dir, fate)
+    create_dir(d)
+    write_tsv(new_expr[[fate]],    file.path(d, "ExpressionSample.tsv"))
+    write_tsv(new_expr_sd[[fate]], file.path(d, "ExpressionSdSample.tsv"))
+    write_tsv(new_samples[[fate]], file.path(d, "SampleAnnotation.tsv"))
+  }
+
+  # ── Aggregate shared segments ─────────────────────────────────────────────
+  message("[5/5] Aggregating shared segments...")
+  leaf_lins <- tree_model$leef
+
+  unique_sample <- do.call(rbind, lapply(new_samples, function(s)
+    s[s$Lineage %in% leaf_lins, ]))
+  unique_expr <- do.call(cbind, lapply(names(new_expr), function(fate) {
+    cols <- rownames(new_samples[[fate]][new_samples[[fate]]$Lineage %in% leaf_lins, ])
+    new_expr[[fate]][, cols, drop = FALSE]
+  }))
+  unique_expr_sd <- do.call(cbind, lapply(names(new_expr_sd), function(fate) {
+    cols <- rownames(new_samples[[fate]][new_samples[[fate]]$Lineage %in% leaf_lins, ])
+    new_expr_sd[[fate]][, cols, drop = FALSE]
+  }))
+
+  shared_lins   <- setdiff(levels(sample_annot$Lineage), leaf_lins)
+  common_sample <- do.call(rbind, list())
+  common_expr   <- data.frame(row.names = rownames(expr))
+  common_sd     <- data.frame(row.names = rownames(expr))
+  common_fit_sd <- data.frame(row.names = rownames(expr))
+
+  for (lin in shared_lins) {
+    fates_w <- names(fate_lineages)[sapply(fate_lineages, function(f) lin %in% f)]
+    seg_e   <- lapply(fates_w, function(fate) {
+      cols <- rownames(new_samples[[fate]][new_samples[[fate]]$Lineage == lin, ])
+      new_expr[[fate]][, cols, drop = FALSE]
+    })
+    seg_sd <- lapply(fates_w, function(fate) {
+      cols <- rownames(new_samples[[fate]][new_samples[[fate]]$Lineage == lin, ])
+      new_expr_sd[[fate]][, cols, drop = FALSE]
+    })
+    ref_cols   <- colnames(seg_e[[1]])
+    ref_sample <- new_samples[[fates_w[1]]][new_samples[[fates_w[1]]]$Lineage == lin, ]
+    common_sample <- rbind(common_sample, ref_sample)
+
+    agg_e  <- data.frame(row.names = rownames(expr))
+    agg_sd <- data.frame(row.names = rownames(expr))
+    agg_fs <- data.frame(row.names = rownames(expr))
+    for (i in seq_len(n)) {
+      vals <- do.call(cbind, lapply(seg_e,  `[[`, i))
+      sds  <- do.call(cbind, lapply(seg_sd, `[[`, i))
+      agg_e  <- cbind(agg_e,  apply(vals, 1, agg_fun))
+      agg_sd <- cbind(agg_sd, apply(sds,  1, agg_fun))
+      agg_fs <- cbind(agg_fs, apply(vals, 1, sd))
+    }
+    colnames(agg_e) <- colnames(agg_sd) <- colnames(agg_fs) <- ref_cols
+    common_expr   <- cbind(common_expr,   agg_e)
+    common_sd     <- cbind(common_sd,     agg_sd)
+    common_fit_sd <- cbind(common_fit_sd, agg_fs)
+  }
+
+  unique_fit_sd      <- unique_expr
+  unique_fit_sd[, ]  <- 0
+  fusion_dir <- file.path(output_dir, "SegmentFusion")
+  create_dir(fusion_dir)
+  write_tsv(cbind(common_expr,   unique_expr),    file.path(fusion_dir, "ExpressionSample.tsv"))
+  write_tsv(cbind(common_sd,     unique_expr_sd), file.path(fusion_dir, "ExpressionSdSample.tsv"))
+  write_tsv(cbind(common_fit_sd, unique_fit_sd),  file.path(fusion_dir, "FittedSdSample.tsv"))
+  write_tsv(rbind(common_sample, unique_sample),  file.path(fusion_dir, "SampleAnnotation.tsv"))
+
+  message("Done. Results in: ", output_dir)
+  invisible(NULL)
+}
